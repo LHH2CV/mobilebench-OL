@@ -35,10 +35,13 @@ task_file    = "top12.csv"  # 任务列表文件
 
 MobileBench-OL/
 ├── maintask.py                 # 主评测逻辑入口
+├── llm_core/
+│   ├── llm_core_xxx.py        
+│   └── llm_core_xxx.py         # xxx模型 Client 封装
 ├── utils/
-│   ├── llm_core_xxx.py         # xxx模型 Client 封装
 │   ├── agent                   # agent 负责device和model交互
 │   ├── adb_excutor.py          # action执行器
+│   ├── tool_xxx.py             # 工具库
 │   └── evaluator_xpath.py      # XPath评估工具
 ├── result/
 │   └── uitars_1_5_reset_.../   # 保存评测轨迹
