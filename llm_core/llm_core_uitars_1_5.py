@@ -32,7 +32,57 @@ finished(content='xxx') # # Submit the task regardless of whether it succeeds or
 
 ## User Instruction
 """
+PROMPT_PREFIX = (
+    'You are an agent who can operate an Android phone on behalf of a user.'
+    " Based on user's goal/request, you may\n"
+    '- Complete some tasks described in the request by performing actions on the phone using visual understanding.\n\n'
+    'At each step, you will be given the history path, current screenshot (before action) and the task goal.\n'
+    'You must analyze the screen and output your action decision:\n'
+    '1. A brief reasoning in Chinese: Why and where to take the next action.\n'
+    '2. A structured action command in format below.\n\n'
+    'Supported Actions:\n'
+    '- Click/tap a position on screen: `{{"click(start_point=(x1,y1))"}}`\n'
+    '- Scroll the screen: `{{"scroll(start_box=(x1,y1), end_box=(x2,y2))"}}`\n'
+    '- Type text into an input field when searching: `{{"type(content=...)''}}`\n'
+   # '- Open an app: `{{"action_type": "open_app", "app_name": "<name>"}}`\n'
+    '- Press home button: `{{press_home()}}`\n'
+    '- Press back button: `{{press_back()}}`\n'
+    '- Wait for UI update: `{{wait()}}`\n'
+    '- The task is finished: `{{finished(content='')}}`\n'
+    'You must only use the above 7 actions. \n'
+    'Use coordinates based on your visual understanding of the screenshot.\n'
+)
 
+SUMMARY_PROMPT_TEMPLATE = (
+    PROMPT_PREFIX
+    + '\nThe (overall) user goal/request is: {goal}\n'
+    'Now I want you to summerize the latest step.\n'
+    'You will be given the screenshot before you performed the action (which'
+    ' has a text label "before" on the bottom right), the action you chose'
+    ' (together with the reason) and the screenshot after the action was'
+    ' performed (which has a text label "after" on the bottom right).\n'
+    'Also here is the list of detailed information for some UI elements'
+    ' in the before screenshot:\n{before_elements}\n'
+    'Here is the list for the after screenshot:\n{after_elements}\n'
+    'This is the action you picked: {action}\n'
+    'Based on the reason: {reason}\n\n'
+    'By comparing the two screenshots (plus the UI element lists) and the'
+    ' action performed, give a brief summary of this step. This summary'
+    ' will be added to action history and used in future action selection,'
+    ' so try to include essential information you think that will be most'
+    ' useful for future action selections like what you'
+    ' intended to do, why, if it worked as expected, if not'
+    ' what might be the reason (be critical, the action/reason might be'
+    ' wrong), what should/should not be done next and so on. Some more'
+    ' rules/tips you should follow:\n'
+    '- Keep it short (better less than 50 words) and in a single line\n'
+    "- Some actions (like `answer`, `wait`) don't involve screen change,"
+    ' you can just assume they work as expected.\n'
+    '- Given this summary will be added into action history, it can be used as'
+    ' memory to include information that needs to be remembered, or shared'
+    ' between different apps.\n\n'
+    'Summary of this step: '
+)
 MAX_IMAGE_COUNT = 10
 IMAGE_FACTOR = 28
 MIN_PIXELS = 100 * 28 * 28
@@ -115,7 +165,7 @@ class OpenAI_Client:
             print(e)
 
 class uitars_1_5_message_handler(object):
-    def process_message(
+    def process_message_som_elements_list(
         self,
         task: str,
         image_path: str,
@@ -126,8 +176,8 @@ class uitars_1_5_message_handler(object):
         
 
         
-        xml_list   = history.get("history_xml_string", [])
-        before_ui_elements=representation_utils.xml_dump_to_ui_elements(xml_list[-1])
+       # xml_list   = history.get("history_xml_string", [])
+        before_ui_elements=representation_utils.xml_dump_to_ui_elements(xml_string)
         before_ui_elements_list = xml_screen_parser_tool._generate_ui_elements_description_list(
             before_ui_elements,
             (1080,2400),
@@ -210,68 +260,68 @@ class uitars_1_5_message_handler(object):
         )
 
         return messages
-    # def process_message(
-    #     self,
-    #     task: str,
-    #     image_path: str,
-    #     history: Optional[Dict[str, List[str]]] = None,
-    # ) -> List[Dict[str, Any]]:
+    def process_message(
+        self,
+        task: str,
+        image_path: str,
+        history: Optional[Dict[str, List[str]]] = None,
+    ) -> List[Dict[str, Any]]:
 
-    #     sys_prompt_block = {
-    #         "role": "user",
-    #         "content": [
-    #             {"type": "text", "text": sys_prompt},
-    #         ],
-    #     }
+        sys_prompt_block = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": sys_prompt},
+            ],
+        }
 
-    #     # 起始 messages
-    #     messages: List[Dict[str, Any]] = [sys_prompt_block]
+        # 起始 messages
+        messages: List[Dict[str, Any]] = [sys_prompt_block]
 
-    #     # ------------- 拼接历史 -------------
-    #     if history:
-    #         response_list   = history.get("history_response", [])
-    #         screenshot_list = history.get("history_image_path", [])
+        # ------------- 拼接历史 -------------
+        if history:
+            response_list   = history.get("history_response", [])
+            screenshot_list = history.get("history_image_path", [])
         
-    #         # 只保留「回复‑截图」成对数据里的最后 9 条
-    #         pairs = list(zip(response_list, screenshot_list))[-9:]
+            # 只保留「回复‑截图」成对数据里的最后 9 条
+            pairs = list(zip(response_list, screenshot_list))[-9:]
         
-    #         for reply, shot in pairs:
-    #             messages.append(
-    #                 {
-    #                     "role": "user",
-    #                     "content": [
-    #                         {
-    #                             "type": "image_url",
-    #                             "image_url": {"url": image_to_uri(shot)},
-    #                         },
-    #                     ],
-    #                 }
-    #             )
-    #             messages.append(
-    #                 {
-    #                     "role": "assistant",
-    #                     "content": [{"type": "text", "text": reply}],
-    #                 }
-    #             )
+            for reply, shot in pairs:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": action_parser_tool.image_to_uri(shot)},
+                            },
+                        ],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": reply}],
+                    }
+                )
 
-    #     # ------------- 当前轮输入 -------------
-    #     messages.append(
-    #         {
-    #             "role": "user",
-    #             "content": [
-    #                 {
-    #                     "type": "image_url",
-    #                     "image_url": {"url": image_to_uri(image_path)},
-    #                 },
-    #                 {
-    #                     "type": "text",
-    #                     "text": f"Task: {task}",
-    #                 },
-    #             ],
-    #         }
-    #     )
+        # ------------- 当前轮输入 -------------
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": action_parser_tool.image_to_uri(image_path)},
+                    },
+                    {
+                        "type": "text",
+                        "text": f"Task: {task}",
+                    },
+                ],
+            }
+        )
 
-    #     return messages
+        return messages
 
     def process_response(self, content, width, height):
         result = action_parser_tool.parse_agent_output(content)
@@ -379,7 +429,89 @@ class uitars_1_5_message_handler(object):
                 "normalized_params": {}               
             })
         return result
+    
+    def process_message_summary(self,history,after_pixels,after_xml_string,goal):
 
+
+        before_path = history["history_image_path"][-1]
+        before_image = Image.open(before_path)
+        before_pixels = np.asarray(before_image).copy()
+        before_xml_string = history["history_xml_string"][-1]
+        reason = history["history_response"][-1]
+        action = history["history_action"][-1]
+
+        before_ui_elements=representation_utils.xml_dump_to_ui_elements(before_xml_string)
+        before_ui_elements_list = xml_screen_parser_tool._generate_ui_elements_description_list(
+            before_ui_elements,
+            (1080,2400),
+        )
+        after_ui_elements=representation_utils.xml_dump_to_ui_elements(after_xml_string)
+        after_ui_elements_list = xml_screen_parser_tool._generate_ui_elements_description_list(
+            after_ui_elements, (1080,2400)
+        )
+        for index, ui_element in enumerate(before_ui_elements):
+          if m3a_utils.validate_ui_element(ui_element, (1080,2400)):
+            m3a_utils.add_ui_element_mark(
+                before_pixels,
+                ui_element,
+                index,
+                (1080,2400),
+                (0,0,1080,2400),
+                0, 
+            )
+        for index, ui_element in enumerate(after_ui_elements):
+          if m3a_utils.validate_ui_element(ui_element, (1080,2400)):
+            m3a_utils.add_ui_element_mark(
+                after_pixels,
+                ui_element,
+                index,
+                (1080,2400),
+                (0,0,1080,2400),
+                0, 
+            )
+        m3a_utils.add_screenshot_label(before_pixels, 'before')
+        m3a_utils.add_screenshot_label(after_pixels, 'after')
+        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(
+            goal=goal,
+            action=action,
+            reason = reason,
+            before_elements = before_ui_elements_list,
+            after_elements = after_ui_elements_list
+        )
+        sys_prompt_block = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": summary_prompt},
+            ],
+        }
+        messages: List[Dict[str, Any]] = [sys_prompt_block]
+        messages = [{
+                "role": "system",
+                "content": "You are a helpful assistant."
+        }] + messages
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": action_parser_tool.image_to_uri(before_pixels)},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": action_parser_tool.image_to_uri(after_pixels)},
+                    }
+                ],
+            }
+        )
+        return messages
 
 class uitars1_5_Wrapper():
 
@@ -404,16 +536,21 @@ class uitars1_5_Wrapper():
     self.message_handler = uitars_1_5_message_handler()
 
 
-#   def predict_mm(self, goal, current_image_path, history):
+  def predict_mm_som(self, goal, current_image_path, current_xml_string,history,step_prefix):
 
-#     req_messages = self.message_handler.process_message(goal,current_image_path,history)
-#     response = self.client.call(req_messages, temparature=0, max_tokens=512, top_p=0.9)
-#     output = self.message_handler.process_response(response,1080,2400)
-#     return response, output
-
-  def predict_mm(self, goal, current_image_path, current_xml_string,history,step_prefix):
-
-    req_messages = self.message_handler.process_message(goal,current_image_path,current_xml_string,history,step_prefix)
-    response = self.client.call(req_messages, temparature=0, max_tokens=512, top_p=0.9)
+    req_messages = self.message_handler.process_message_som_elements_list(goal,current_image_path,current_xml_string,history,step_prefix)
+    response = self.client.call(req_messages)
     output = self.message_handler.process_response(response,1080,2400)
     return response, output
+
+  def predict_mm(self, goal, current_image_path,history):
+
+    req_messages = self.message_handler.process_message(goal,current_image_path,history)
+    response = self.client.call(req_messages)
+    output = self.message_handler.process_response(response,1080,2400)
+    return response, output
+  
+  def summarize(self,history,after_pixels,after_xml_string,goal):
+    summary_messages = self.message_handler.process_message_summary(history,after_pixels,after_xml_string,goal)
+    response = self.client.call(summary_messages)
+    return response

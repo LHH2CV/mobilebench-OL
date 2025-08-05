@@ -1,4 +1,6 @@
-from openai import OpenAI
+from openai import AzureOpenAI
+import openai
+import time
 from typing import List, Dict, Any, Optional, Tuple ,Union
 import re
 import base64, math, requests
@@ -9,6 +11,7 @@ from utils import m3a_utils
 from utils import action_parser_tool
 from utils import xml_screen_parser_tool
 import numpy as np
+
 
 
 PROMPT_PREFIX = (
@@ -155,45 +158,60 @@ SUMMARY_PROMPT_TEMPLATE = (
     ' between different apps.\n\n'
     'Summary of this step: '
 )
+    
 
-
-class OpenAI_Client:
-    def __init__(self, ip, port=8000, api_key="123456"):
-        print(f"http://{ip}:{port}/v1")
-        openai_api_key = api_key
-        openai_api_base = f"http://{ip}:{port}/v1"
-        self.client = OpenAI(
-            api_key=openai_api_key,
-            base_url=openai_api_base,
+class Azure_Openai_Client:
+    def __init__(self,model,api_key,azure_endpoint,api_version,temperature,max_tokens):
+        self.client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version
         )
-
-        models = self.client.models.list()
-        self.model = models.data[0].id
-        print(f"opai:{self.model}")
-
-    def call(self, messages, temparature, top_p, max_tokens):
-        try:
-            if top_p is not None:
-                result = self.client.chat.completions.create(
-                    messages=messages,
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.model = model
+    def call(self,messages):
+        trial = 0
+        while trial < 3:
+            trial += 1
+            try:
+                response = self.client.chat.completions.create(
                     model=self.model,
-                    max_tokens=max_tokens,
-                    temperature=temparature,
-                    top_p=top_p,
-                )
-            else:
-                result = self.client.chat.completions.create(
                     messages=messages,
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    temperature=temparature
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
                 )
-            return result.choices[0].message.content
-        except Exception as e:
-            print(e)
-
-class deepseek_vl2_message_handler(object):
- 
+                result = response.choices[0].message.content
+                return result
+            except openai.AuthenticationError as e:
+                print(f"OpenAI API returned an Authentication Error: {e}")
+            except openai.APIConnectionError as e:
+                # Handle connection error here
+                print(f"Failed to connect to OpenAI API: {e}")
+            except openai.BadRequestError as e:
+                 # Handle connection error here
+                 print(f"Invalid Request Error: {e}")
+            except openai.RateLimitError as e:
+                 # Handle rate limit error
+                 print(f"OpenAI API request exceeded rate limit: {e}")
+                 # 等待50s
+                 print("等待 50s...")
+                 time.sleep(50)
+            except openai.InternalServerError as e:
+                 # Handle Service Unavailable error
+                 print(f"Service Unavailable: {e}")
+            except openai.APITimeoutError as e:
+                 # Handle request timeout
+                 print(f"Request timed out: {e}")
+            except openai.APIError as e:
+                 # Handle API error here, e.g. retry or log
+                 print(f"OpenAI API returned an API Error: {e}")
+            except:
+                 # Handles all other exceptions
+                 print("An exception has occured.")
+        return result
+    
+class gpt4o_message_handler(object):
     def process_message(
         self,
         task: str,
@@ -215,11 +233,47 @@ class deepseek_vl2_message_handler(object):
             history=history_summaries.strip(),
             additional_guidelines=GUIDANCE
         )
-        messages = [
-            {
+        sys_prompt_block = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt_text},
+            ],
+        }
+
+        # 起始 messages
+        messages: List[Dict[str, Any]] = [sys_prompt_block]
+        messages = [{
                 "role": "system",
-                "content": prompt_text
-            },
+                "content": "You are a helpful assistant."
+        }] + messages
+
+        if history:
+            response_list   = history.get("history_response", [])
+            screenshot_list = history.get("history_image_path", [])
+        
+            # 只保留「回复‑截图」成对数据里的最后 9 条
+            pairs = list(zip(response_list, screenshot_list))[-9:]
+        
+            for reply, shot in pairs:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": action_parser_tool.image_to_uri(shot)},
+                            },
+                        ],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": reply}],
+                    }
+                )
+
+        messages.append(
             {
                 "role": "user",
                 "content": [
@@ -229,9 +283,8 @@ class deepseek_vl2_message_handler(object):
                     }
                 ],
             }
-        ]
+        )
         return messages
-
     def process_message_som_elements_list(
         self,
         task: str,
@@ -246,26 +299,23 @@ class deepseek_vl2_message_handler(object):
             before_ui_elements,
             (1080,2400),
         )
-
-        img = Image.open(image_path).convert("RGB") 
-        resized_img = img.resize((364, 784))  # 宽 × 高
-        before_pixels = np.asarray(resized_img).copy()
+        before_pixels = np.asarray(Image.open(image_path)).copy()
         for index, ui_element in enumerate(before_ui_elements):
-          if m3a_utils.validate_ui_element(ui_element, (364, 784)):
+          if m3a_utils.validate_ui_element(ui_element, (1080,2400)):
             m3a_utils.add_ui_element_mark(
                 before_pixels,
                 ui_element,
                 index,
-                (364, 784),
-                (0,0,364, 784),
-                0, #ori
+                (1080,2400),
+                (0,0,1080,2400),
+                0, 
             )
 
 
         save_path = f"{step_prefix}_som.png"
         image = Image.fromarray(before_pixels)
         image.save(save_path, format='PNG')
-        before_ui_elements_list = ""
+
 
         history_summaries = []
         if history:
@@ -297,21 +347,17 @@ class deepseek_vl2_message_handler(object):
             response_list   = history.get("history_response", [])
             screenshot_list = history.get("history_image_path", [])
         
-            # 只保留「回复‑截图」成对数据里的最后 1 张
-            pairs = list(zip(response_list, screenshot_list))[-1:]
+            # 只保留「回复‑截图」成对数据里的最后 9 条
+            pairs = list(zip(response_list, screenshot_list))[-9:]
         
             for reply, shot in pairs:
-                img = Image.open(shot).convert("RGB") 
-                resized_img = img.resize((364, 784))  # 宽 × 高
-        #resized_img.save("resized_image.png")
-                resized_pixels = np.asarray(resized_img).copy()
                 messages.append(
                     {
                         "role": "user",
                         "content": [
                             {
                                 "type": "image_url",
-                                "image_url": {"url": action_parser_tool.image_to_uri(resized_pixels)},
+                                "image_url": {"url": action_parser_tool.image_to_uri(shot)},
                             },
                         ],
                     }
@@ -329,102 +375,23 @@ class deepseek_vl2_message_handler(object):
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": action_parser_tool.image_to_uri(before_pixels)},
+                        "image_url": {"url": action_parser_tool.image_to_uri(image_path)},
                     }
                 ],
             }
         )
-
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": action_parser_tool.image_to_uri(save_path)},
+                    }
+                ],
+            }
+        )
         return messages
-
-    def process_response(self, content, width, height):
-        result = action_parser_tool.parse_agent_output(content)
-        extracted_action = result["action"]
-        try:
-            if "click" in extracted_action:
-                x,y = action_parser_tool.extract_xy_from_point(extracted_action)
-                params = {
-                    "position":[int(x * width / 1000), int(y * height / 1000)],
-                    "click_times":1
-                }
-                normalized_params = {
-                    "position":[round(x/1000,2),round(y/1000,2)],
-                    "click_times":1
-                }
-                result.update({
-                    "action": "click",
-                    "params": params,
-                    "normalized_params": normalized_params
-                })
-            elif "type" in extracted_action:
-                text = re.search(r"content='(.*?)'", extracted_action).group(1)
-                result.update({
-                    "action": "type",
-                    "params": {"text": text},
-                    "normalized_params": {"text": text}
-                })
-            elif "scroll" in extracted_action or "swipe "in extracted_action:
-                x,y,dir = action_parser_tool.extract_swipe_point_direction(extracted_action)
-                params = {
-                    "position":[int(x/1000 * width), int(y/1000 * height)],
-                    "direction":dir
-                }
-                normalized_params = {
-                    "position":[round(x/1000,2),round(y/1000,2)],
-                    "direction":dir                    
-                }
-                result.update({
-                    "action": "scroll",
-                    "params": params,
-                    "normalized_params": normalized_params
-                })
-            elif "navigate_back" in extracted_action or "press_back" in extracted_action:
-                result.update({
-                    "action": "back",
-                    "params": {},
-                    "normalized_params": {}
-                })
-            elif "navigate_home" in extracted_action or "press_home" in extracted_action:
-                result.update({
-                    "action": "home",
-                    "params": {},
-                    "normalized_params": {}
-                })
-            elif "wait" in extracted_action.lower():
-                result.update({
-                    "action": "wait",
-                    "params": {},
-                    "normalized_params": {}
-                })
-            elif "finished" in extracted_action:
-                try:
-                    text = re.search(r"content='(.*?)'", extracted_action).group(1)
-                except:
-                    text = ""
-                result.update({
-                    "action": "terminate",
-                    "params": {"text": text},
-                    "normalized_params": {"text": text}
-                })
-            elif "open" in extracted_action.lower():
-                try:
-                    text = re.search(r"content='(.*?)'", extracted_action).group(1)
-                except:
-                    text = ""
-                result.update({
-                    "action": "open",
-                    "params": {"app_name": text},
-                    "normalized_params": {"app_name": text},
-                })
-            else:
-                raise ValueError(f"Invalid action: {extracted_action}")
-        except:
-            result.update({
-                "action": "invalid",
-                "params": {},
-                "normalized_params": {}               
-            })
-        return result
 
     def process_message_summary(self,history,after_pixels,after_xml_string,goal):
 
@@ -508,11 +475,108 @@ class deepseek_vl2_message_handler(object):
             }
         )
         return messages
+
+    def process_response(self, content, width, height):
+        result = action_parser_tool.parse_agent_output(content)
+        extracted_action = result["action"]
+        try:
+            if "click" in extracted_action:
+                x,y = action_parser_tool.extract_xy_from_point(extracted_action)
+                normalized_params = {
+                    "position": [round(x / width, 2), round(y / height, 2)],
+                    "click_times":1
+                }
+                params = {
+                    "position":[x, y],
+                    "click_times":1
+                }
+                result.update({
+                    "action": "click",
+                    "params": params,
+                    "normalized_params": normalized_params
+                })
+            elif "type" in extracted_action:
+                text = re.search(r"content='(.*?)'", extracted_action).group(1)
+                result.update({
+                    "action": "type",
+                    "params": {"text": text},
+                    "normalized_params": {"text": text}
+                })
+            elif "scroll" in extracted_action or "swipe "in extracted_action:
+                x1,y1,x2,y2 = action_parser_tool.extract_swipe_points(extracted_action)
+                normalized_params = {
+                    "start_position": [round(x1 / width ,2), round(y1 / height,2)],
+                    "end_position": [round(x2 / width ,2), round(y2 / height,2)],
+                    "press_duration": -1
+                }
+                params = {
+                    "start_position": [int(x1), int(y1)],
+                    "end_position": [int(x2), int(y2)],
+                    "press_duration": -1
+                }
+                result.update({
+                    "action": "swipe",
+                    "params": params,
+                    "normalized_params": normalized_params
+                })
+            elif "navigate_back" in extracted_action or "press_back" in extracted_action:
+                result.update({
+                    "action": "back",
+                    "params": {},
+                    "normalized_params": {}
+                })
+            elif "navigate_home" in extracted_action or "press_home" in extracted_action:
+                result.update({
+                    "action": "home",
+                    "params": {},
+                    "normalized_params": {}
+                })
+            elif "wait" in extracted_action.lower():
+                result.update({
+                    "action": "wait",
+                    "params": {},
+                    "normalized_params": {}
+                })
+            elif "finished" in extracted_action:
+                try:
+                    text = re.search(r"content='(.*?)'", extracted_action).group(1)
+                except:
+                    text = ""
+                result.update({
+                    "action": "terminate",
+                    "params": {"text": text},
+                    "normalized_params": {"text": text}
+                })
+            elif "open" in extracted_action.lower():
+                try:
+                    text = re.search(r"content='(.*?)'", extracted_action).group(1)
+                except:
+                    text = ""
+                result.update({
+                    "action": "open",
+                    "params": {"app_name": text},
+                    "normalized_params": {"app_name": text},
+                })
+            else:
+                raise ValueError(f"Invalid action: {extracted_action}")
+        except:
+            result.update({
+                "action": "invalid",
+                "params": {},
+                "normalized_params": {}               
+            })
+        return result
     
+class GPT4oWrapper():
+  """OpenAI GPT4 wrapper.
 
-
-class deepseek_vl2_Wrapper():
-
+  Attributes:
+    openai_api_key: The class gets the OpenAI api key either explicitly, or
+      through env variable in which case just leave this empty.
+    max_retry: Max number of retries when some error happens.
+    temperature: The temperature parameter in LLM to control result stability.
+    model: GPT model to use based on if it is multimodal.
+  """
 
   RETRY_WAITING_SECONDS = 20
 
@@ -528,11 +592,14 @@ class deepseek_vl2_Wrapper():
       print('Max_retry must be positive. Reset it to 3')
     self.max_retry = min(max_retry, 5)
     self.temperature = temperature
+    max_tokens = 3500
     self.max_length=max_length
-    self.client=OpenAI_Client("10.221.105.108", port=42307)
-    self.message_handler = deepseek_vl2_message_handler()
-
-
+    model = "gpt-4o"
+    api_key = "3aeg82V4i5DX1bZCCfMhdtfVtHSvklZMdsc5XAHyh85C6fbODyvpJQQJ99BBACYeBjFXJ3w3AAABACOG5iX9"
+    azure_endpoint = "https://ui-agent-exp.openai.azure.com/"
+    api_version="2025-01-01-preview"
+    self.client=Azure_Openai_Client(model,api_key,azure_endpoint,api_version,temperature,max_tokens=max_tokens)
+    self.message_handler = gpt4o_message_handler()
 
   def predict_mm_som(self, goal, current_image_path, current_xml_string,history,step_prefix):
 
@@ -552,3 +619,19 @@ class deepseek_vl2_Wrapper():
     summary_messages = self.message_handler.process_message_summary(history,after_pixels,after_xml_string,goal)
     response = self.client.call(summary_messages)
     return response
+  
+# gpt = GPT4oWrapper()
+# image2 = "result\\gpt4o_m3a_test_longtail\\bili_0\\step_1.png"
+# image1 = "result\\gpt4o_m3a_test_longtail\\bili_0\\step_1.png"
+# xml_path = "result\\gpt4o_m3a_test_longtail\\bili_0\\step_1.xml"
+# history = {}
+# history["history_image_path"] = [image1,image2]
+
+# goal = "open app"
+# # before_image = Image.open(before_path)
+# # before_pixels = np.asarray(before_image).copy()
+# after_pixels = np.asarray(Image.open(image2)).copy()
+# with open(xml_path, 'r', encoding='utf-8') as f:
+#     xml_string = f.read()
+# history["history_xml_string"] = [xml_string]
+# gpt.summarize(history,after_pixels,xml_string,goal)
